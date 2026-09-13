@@ -39,12 +39,14 @@
             android:textSize="18sp"
             android:textStyle="bold" />
 
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/btnRetry"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:backgroundTint="@color/tiktok_pink"
+            android:background="@color/tiktok_pink"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
             android:text="Thử lại (OK)"
             android:textColor="@color/white" />
     </LinearLayout>
