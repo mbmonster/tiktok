@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TikTok TV</string>
+    <string name="loading">Đang tải TikTok...</string>
+    <string name="press_back_again_to_exit">Nhấn Back lần nữa để thoát</string>
+</resources>
