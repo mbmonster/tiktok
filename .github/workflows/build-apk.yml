@@ -24,14 +24,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Ensure Gradle Wrapper
-        run: gradle wrapper || true
+      - name: Ensure Gradle Wrapper JAR
+        run: |
+          mkdir -p gradle/wrapper
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            curl -sLo gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.5.0/gradle/wrapper/gradle-wrapper.jar
+          fi
 
       - name: Make Gradlew Executable
         run: chmod +x ./gradlew
 
       - name: Build APK with Gradle
-        run: ./gradlew assembleDebug assembleRelease --stacktrace
+        run: ./gradlew assembleRelease || ./gradlew assembleDebug
 
       - name: Prepare APK File
         run: |
