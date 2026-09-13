@@ -24,26 +24,7 @@
 
 ## 🚀 Hướng dẫn lấy file APK qua GitHub (Không cần cài Java/Android Studio)
 
-Bạn chỉ cần thực hiện 3 bước đơn giản sau:
-
-### Bước 1: Tạo Repository trên GitHub
-1. Truy cập [github.com](https://github.com) và đăng nhập (nếu chưa có tài khoản, đăng ký miễn phí mất 1 phút).
-2. Tạo một repository mới (ví dụ đặt tên là `tiktok-tv`, chọn chế độ **Public** hoặc **Private** đều được).
-
-### Bước 2: Đẩy mã nguồn lên GitHub
-Mở cửa sổ dòng lệnh (Terminal / PowerShell) ngay tại thư mục này (`d:\Tiktok`) và chạy các lệnh:
-
-```bash
-git init
-git add .
-git commit -m "Khoi tao TikTok TV cho Mi Box"
-git branch -M main
-git remote add origin https://github.com/TÊN_TÀI_KHOẢN_CỦA_BẠN/tiktok-tv.git
-git push -u origin main
-```
-*(Thay `TÊN_TÀI_KHOẢN_CỦA_BẠN` bằng username GitHub của bạn).*
-
-### Bước 3: Tải file APK về
+### Tải file APK về
 1. Sau khi `git push`, bạn vào lại trang repo của bạn trên GitHub, bấm vào tab **Actions**.
 2. Bạn sẽ thấy tiến trình **"Build TikTok TV APK"** đang tự động chạy.
 3. Chờ khoảng 1 - 2 phút cho đến khi hiện dấu tích xanh ✅ hoàn thành.
