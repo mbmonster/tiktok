@@ -3,4 +3,7 @@
     <string name="app_name">TikTok TV</string>
     <string name="loading">Đang tải TikTok...</string>
     <string name="press_back_again_to_exit">Nhấn Back lần nữa để thoát</string>
+    <string name="mouse_mode_on">🖱️ Chuột ảo: BẬT (Bấm MENU để tắt)</string>
+    <string name="mouse_mode_off">📺 Chế độ TV: BẬT (Bấm MENU để bật chuột)</string>
+    <string name="modal_closed">Đã đóng bảng thông báo</string>
 </resources>

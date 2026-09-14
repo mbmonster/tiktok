@@ -4,12 +4,37 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
+    <!-- Main WebView for TikTok -->
     <WebView
         android:id="@+id/webView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:focusable="true"
         android:focusableInTouchMode="true" />
+
+    <!-- Virtual Mouse Cursor Overlay -->
+    <ImageView
+        android:id="@+id/mouseCursor"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:elevation="20dp"
+        android:src="@drawable/ic_cursor"
+        android:visibility="gone" />
+
+    <!-- Mode Toast / Status Indicator for TV -->
+    <TextView
+        android:id="@+id/tvStatusIndicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="24dp"
+        android:layout_marginEnd="24dp"
+        android:background="@drawable/bg_indicator"
+        android:elevation="25dp"
+        android:text="🖱️ Chế độ chuột: BẬT (Bấm MENU để tắt)"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:visibility="gone" />
 
     <!-- Loading Indicator -->
     <ProgressBar
@@ -18,6 +43,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
+        android:elevation="10dp"
         android:indeterminate="true"
         android:visibility="visible" />
 
@@ -27,6 +53,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
+        android:elevation="10dp"
         android:gravity="center"
         android:orientation="vertical"
         android:visibility="gone">

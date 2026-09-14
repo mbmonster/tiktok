@@ -1,23 +1,34 @@
 package com.tiktok.tvweb;
 
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.graphics.Bitmap;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.ImageView;
 import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -28,11 +39,44 @@ public class MainActivity extends AppCompatActivity {
     private static final String TIKTOK_URL = "https://www.tiktok.com";
     private static final String DESKTOP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
+    // Video switch debounce threshold (prevents media decoder freeze and audio stutter)
+    private static final long SWITCH_DEBOUNCE_MS = 350;
+    private long lastVideoSwitchTime = 0;
+
+    // UI elements
     private WebView webView;
     private ProgressBar progressBar;
     private View errorLayout;
     private View btnRetry;
+    private ImageView mouseCursor;
+    private TextView tvStatusIndicator;
+
+    // Virtual Mouse State
+    private boolean isMouseMode = false;
+    private float cursorX = -1;
+    private float cursorY = -1;
+    private float cursorSpeed = 30f;
+    private long lastCursorMoveTime = 0;
+
+    // Track long press on OK button so all remotes can toggle mouse mode
+    private boolean isLongPressHandled = false;
+
+    // Audio Focus Manager
+    private AudioManager audioManager;
+    private AudioManager.OnAudioFocusChangeListener audioFocusChangeListener;
+    private Object audioFocusRequestObj;
+
+    // Back press tracker
     private long lastBackPressTime = 0;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideIndicatorRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (tvStatusIndicator != null) {
+                tvStatusIndicator.setVisibility(View.GONE);
+            }
+        }
+    };
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -40,23 +84,23 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
 
         try {
-            // Keep screen awake while watching TV
+            // Keep TV screen awake during video playback
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         } catch (Exception e) {
             Log.e(TAG, "Error setting FLAG_KEEP_SCREEN_ON", e);
         }
 
-        // Set content view FIRST
         setContentView(R.layout.activity_main);
-
-        // Hide system UI after content view is set
         hideSystemUI();
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
         errorLayout = findViewById(R.id.errorLayout);
         btnRetry = findViewById(R.id.btnRetry);
+        mouseCursor = findViewById(R.id.mouseCursor);
+        tvStatusIndicator = findViewById(R.id.tvStatusIndicator);
 
+        setupAudioManager();
         setupWebView();
 
         if (btnRetry != null) {
@@ -72,6 +116,63 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void setupAudioManager() {
+        try {
+            audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+            audioFocusChangeListener = focusChange -> {
+                Log.d(TAG, "Audio focus changed: " + focusChange);
+            };
+        } catch (Exception e) {
+            Log.e(TAG, "Error setting up AudioManager", e);
+        }
+    }
+
+    private void requestTVAudioFocus() {
+        if (audioManager == null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                requestAudioFocusOreo();
+            } else {
+                audioManager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not request audio focus", e);
+        }
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private void requestAudioFocusOreo() {
+        AudioAttributes playbackAttributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build();
+        AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(playbackAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build();
+        audioFocusRequestObj = focusRequest;
+        audioManager.requestAudioFocus(focusRequest);
+    }
+
+    private void abandonTVAudioFocus() {
+        if (audioManager == null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequestObj instanceof AudioFocusRequest) {
+                abandonAudioFocusOreo();
+            } else if (audioFocusChangeListener != null) {
+                audioManager.abandonAudioFocus(audioFocusChangeListener);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not abandon audio focus", e);
+        }
+    }
+
+    @TargetApi(Build.VERSION_CODES.O)
+    private void abandonAudioFocusOreo() {
+        audioManager.abandonAudioFocusRequest((AudioFocusRequest) audioFocusRequestObj);
+    }
+
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -84,6 +185,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         hideSystemUI();
+        requestTVAudioFocus();
         if (webView != null) {
             webView.onResume();
         }
@@ -92,8 +194,18 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        abandonTVAudioFocus();
         if (webView != null) {
             webView.onPause();
+        }
+        flushCookies();
+    }
+
+    private void flushCookies() {
+        try {
+            CookieManager.getInstance().flush();
+        } catch (Exception e) {
+            Log.w(TAG, "Cookie flush error", e);
         }
     }
 
@@ -127,23 +239,27 @@ public class MainActivity extends AppCompatActivity {
         if (webView == null) return;
 
         try {
-            WebSettings settings = webView.getSettings();
+            // Hardware acceleration is key for smooth 60fps video playback on TV boxes
+            webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-            // Enable essential web features
+            WebSettings settings = webView.getSettings();
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
+            settings.setDatabaseEnabled(true);
             settings.setSupportZoom(false);
             settings.setBuiltInZoomControls(false);
             settings.setDisplayZoomControls(false);
 
-            // Set Desktop User-Agent so TikTok renders full desktop layout
+            // Desktop User Agent for full video player layout
             settings.setUserAgentString(DESKTOP_USER_AGENT);
 
-            // Allow media playback without user touch gesture (Crucial for TV Autoplay)
+            // Allow video autoplay without touch gesture on TV
             settings.setMediaPlaybackRequiresUserGesture(false);
 
-            // Cache & Rendering performance
+            // Performance optimizations for TV chipsets
             settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+            settings.setEnableSmoothTransition(false); // Prevents stuttery software interpolation
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
@@ -173,6 +289,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 if (progressBar != null) progressBar.setVisibility(View.GONE);
                 injectCustomScripts();
+                flushCookies();
             }
 
             @Override
@@ -186,136 +303,383 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Injects CSS to hide mobile install banners and ensure smooth TV experience
+     * Injects custom CSS and JS optimizer:
+     * 1. Strips GPU-killing backdrop filters and box shadows for ultra-smooth 60fps playback.
+     * 2. Maximizes video container to 100% fullscreen cinema layout.
+     * 3. Exclusive Audio Watchdog: mutes/pauses background videos to eliminate crackling and A/V desync.
+     * 4. Smart Login & QR Auto-Enhancer: expands QR code so user can scan from couch.
      */
     private void injectCustomScripts() {
         if (webView == null) return;
         try {
-            String hideBannersCSS = "(function() {" +
-                    "var style = document.createElement('style');" +
-                    "style.innerHTML = '" +
-                    "[class*=\"banner\"], [id*=\"banner\"], " +
-                    "[data-e2e*=\"download-app\"], [class*=\"download-app\"], " +
-                    "[class*=\"DivBannerContainer\"], [class*=\"DivDownloadAppContainer\"] " +
-                    "{ display: none !important; } " +
-                    "body { overflow: hidden !important; }';" +
-                    "document.head.appendChild(style);" +
+            String script =
+                    "(function() {" +
+                    "  if (window.__tiktokTVInjected) return;" +
+                    "  window.__tiktokTVInjected = true;" +
+
+                    // Inject Lightweight TV Cinema CSS
+                    "  var style = document.createElement('style');" +
+                    "  style.id = 'tiktok-tv-optimized-css';" +
+                    "  style.innerHTML = '" +
+                    "    * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; box-shadow: none !important; text-shadow: none !important; } " +
+                    "    body { overflow: hidden !important; background-color: #000 !important; } " +
+                    "    video { will-change: transform; transform: translateZ(0); object-fit: contain !important; } " +
+                    // Hide desktop banners, app promo downloads, redundant sidebars when watching
+                    "    [class*=\"banner\"], [id*=\"banner\"], [data-e2e*=\"download-app\"], [class*=\"download-app\"], " +
+                    "    [class*=\"DivBannerContainer\"], [class*=\"DivDownloadAppContainer\"], [class*=\"DivToastContainer\"], " +
+                    "    [class*=\"BottomBanner\"] { display: none !important; } " +
+                    // Center and enlarge QR code container when visible
+                    "    [data-e2e=\"qr-code\"], [class*=\"QRCodeContainer\"], [class*=\"DivQRCode\"] { transform: scale(1.2) !important; margin: 10px auto !important; } " +
+                    "  ';" +
+                    "  document.head.appendChild(style);" +
+
+                    // --- EXCLUSIVE AUDIO WATCHDOG ---
+                    // Ensures only ONE video plays audio at a time to prevent audio crackling, overlap, and latency
+                    "  function muteOtherVideos(activeVid) {" +
+                    "    try {" +
+                    "      var allVids = document.querySelectorAll('video');" +
+                    "      for (var i = 0; i < allVids.length; i++) {" +
+                    "        var v = allVids[i];" +
+                    "        if (v !== activeVid) {" +
+                    "          v.pause();" +
+                    "          v.muted = true;" +
+                    "          v.volume = 0;" +
+                    "        }" +
+                    "      }" +
+                    "      if (activeVid) {" +
+                    "        activeVid.muted = false;" +
+                    "        activeVid.volume = 1.0;" +
+                    "        activeVid.playbackRate = 1.0;" +
+                    "      }" +
+                    "    } catch(e) {}" +
+                    "  }" +
+
+                    "  document.addEventListener('play', function(e) {" +
+                    "    if (e.target && e.target.tagName === 'VIDEO') { muteOtherVideos(e.target); }" +
+                    "  }, true);" +
+
+                    "  document.addEventListener('playing', function(e) {" +
+                    "    if (e.target && e.target.tagName === 'VIDEO') { muteOtherVideos(e.target); }" +
+                    "  }, true);" +
+
+                    // --- NAVIGATION HELPERS ---
+                    "  window.__tiktokTVNextVideo = function() {" +
+                    "    var btn = document.querySelector('[data-e2e=\"arrow-down\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"Next\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"next\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"xuống\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"tiếp\"]');" +
+                    "    if (btn) {" +
+                    "      btn.click();" +
+                    "    } else {" +
+                    "      var activeVideo = document.querySelector('video');" +
+                    "      var target = activeVideo ? (activeVideo.closest('[data-e2e=\"recommend-list-item-container\"]') || activeVideo) : document.body;" +
+                    "      var evt = new KeyboardEvent('keydown', {key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40, bubbles: true});" +
+                    "      target.dispatchEvent(evt);" +
+                    "      window.dispatchEvent(evt);" +
+                    "    }" +
+                    "  };" +
+
+                    "  window.__tiktokTVPrevVideo = function() {" +
+                    "    var btn = document.querySelector('[data-e2e=\"arrow-up\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"Previous\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"previous\"]') || " +
+                    "              document.querySelector('button[aria-label*=\"lên\"]');" +
+                    "    if (btn) {" +
+                    "      btn.click();" +
+                    "    } else {" +
+                    "      var activeVideo = document.querySelector('video');" +
+                    "      var target = activeVideo ? (activeVideo.closest('[data-e2e=\"recommend-list-item-container\"]') || activeVideo) : document.body;" +
+                    "      var evt = new KeyboardEvent('keydown', {key: 'ArrowUp', code: 'ArrowUp', keyCode: 38, which: 38, bubbles: true});" +
+                    "      target.dispatchEvent(evt);" +
+                    "      window.dispatchEvent(evt);" +
+                    "    }" +
+                    "  };" +
+
+                    "  window.__tiktokTVTogglePlay = function() {" +
+                    "    var v = document.querySelector('video');" +
+                    "    if (v) {" +
+                    "      if (v.paused) { v.play(); } else { v.pause(); }" +
+                    "    } else {" +
+                    "      var evt = new KeyboardEvent('keydown', {key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true});" +
+                    "      window.dispatchEvent(evt);" +
+                    "    }" +
+                    "  };" +
+
+                    "  window.__tiktokTVSeek = function(seconds) {" +
+                    "    var v = document.querySelector('video');" +
+                    "    if (v && v.duration) {" +
+                    "      v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + seconds));" +
+                    "    } else {" +
+                    "      var key = seconds < 0 ? 'ArrowLeft' : 'ArrowRight';" +
+                    "      var code = seconds < 0 ? 37 : 39;" +
+                    "      var evt = new KeyboardEvent('keydown', {key: key, code: key, keyCode: code, which: code, bubbles: true});" +
+                    "      window.dispatchEvent(evt);" +
+                    "    }" +
+                    "  };" +
+
+                    // Smart Modal closer: closes login modal on Back press
+                    "  window.__tiktokTVCloseModal = function() {" +
+                    "    var closeBtn = document.querySelector('[data-e2e=\"modal-close-inner-button\"], button[aria-label*=\"Close\"], [class*=\"CloseButton\"], [class*=\"ModalClose\"]');" +
+                    "    if (closeBtn) {" +
+                    "      closeBtn.click();" +
+                    "      return true;" +
+                    "    }" +
+                    "    var modal = document.querySelector('[class*=\"DivModalContainer\"], [class*=\"DivLoginContainer\"]');" +
+                    "    if (modal) {" +
+                    "      modal.remove();" +
+                    "      return true;" +
+                    "    }" +
+                    "    return false;" +
+                    "  };" +
+
+                    // Auto switch to QR code tab if login dialog appears
+                    "  setInterval(function() {" +
+                    "    var modal = document.querySelector('[data-e2e=\"modal-close-inner-button\"], [class*=\"DivLoginContainer\"]');" +
+                    "    if (modal) {" +
+                    "      var qrImg = document.querySelector('[data-e2e=\"qr-code\"], canvas');" +
+                    "      if (!qrImg) {" +
+                    "        var qrBtn = document.querySelector('a[href*=\"qrcode\"], div[role=\"button\"][data-e2e*=\"qr\"]');" +
+                    "        if (qrBtn) { qrBtn.click(); }" +
+                    "      }" +
+                    "    }" +
+                    "  }, 1000);" +
+
                     "})();";
-            webView.evaluateJavascript(hideBannersCSS, null);
+
+            webView.evaluateJavascript(script, null);
         } catch (Exception e) {
             Log.w(TAG, "Error injecting scripts", e);
         }
     }
 
+    private void showStatusIndicator(String message) {
+        if (tvStatusIndicator == null) return;
+        uiHandler.removeCallbacks(hideIndicatorRunnable);
+        tvStatusIndicator.setText(message);
+        tvStatusIndicator.setVisibility(View.VISIBLE);
+        uiHandler.postDelayed(hideIndicatorRunnable, 3000);
+    }
+
+    private void toggleMouseMode() {
+        isMouseMode = !isMouseMode;
+        if (isMouseMode) {
+            if (cursorX < 0 || cursorY < 0) {
+                if (webView != null && webView.getWidth() > 0 && webView.getHeight() > 0) {
+                    cursorX = webView.getWidth() / 2f;
+                    cursorY = webView.getHeight() / 2f;
+                } else {
+                    cursorX = 640f;
+                    cursorY = 360f;
+                }
+            }
+            updateCursorPosition();
+            if (mouseCursor != null) mouseCursor.setVisibility(View.VISIBLE);
+            showStatusIndicator(getString(R.string.mouse_mode_on));
+        } else {
+            if (mouseCursor != null) mouseCursor.setVisibility(View.GONE);
+            showStatusIndicator(getString(R.string.mouse_mode_off));
+        }
+    }
+
+    private void updateCursorPosition() {
+        if (mouseCursor == null || webView == null) return;
+        int maxX = Math.max(0, webView.getWidth() - 32);
+        int maxY = Math.max(0, webView.getHeight() - 32);
+        cursorX = Math.max(0, Math.min(cursorX, maxX));
+        cursorY = Math.max(0, Math.min(cursorY, maxY));
+        mouseCursor.setX(cursorX);
+        mouseCursor.setY(cursorY);
+    }
+
+    private void moveCursor(float dx, float dy) {
+        long now = System.currentTimeMillis();
+        // Dynamic acceleration when holding D-Pad
+        if (now - lastCursorMoveTime < 120) {
+            cursorSpeed = Math.min(65f, cursorSpeed + 4f);
+        } else {
+            cursorSpeed = 26f;
+        }
+        lastCursorMoveTime = now;
+
+        cursorX += dx * cursorSpeed;
+        cursorY += dy * cursorSpeed;
+        updateCursorPosition();
+    }
+
+    private void dispatchMouseClick() {
+        if (webView == null || cursorX < 0 || cursorY < 0) return;
+        try {
+            long downTime = SystemClock.uptimeMillis();
+            long eventTime = SystemClock.uptimeMillis();
+            MotionEvent downEvent = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_DOWN, cursorX, cursorY, 0);
+            MotionEvent upEvent = MotionEvent.obtain(downTime, eventTime + 40, MotionEvent.ACTION_UP, cursorX, cursorY, 0);
+            webView.dispatchTouchEvent(downEvent);
+            webView.dispatchTouchEvent(upEvent);
+            downEvent.recycle();
+            upEvent.recycle();
+        } catch (Exception e) {
+            Log.e(TAG, "Error dispatching mouse click", e);
+        }
+    }
+
     /**
-     * Map Mi Box Remote Control D-Pad keys to TikTok navigation
+     * Map Remote Control keys:
+     * - Press MENU, INFO, GUIDE, 0: Toggle Virtual Mouse Cursor
+     * - Long press OK / Enter: Toggle Virtual Mouse Cursor (for remotes without MENU key)
+     * - When Mouse Mode is ON: D-Pad moves cursor, OK clicks
+     * - When Mouse Mode is OFF: D-Pad switches video smoothly (debounced), OK toggles Play/Pause
      */
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // Track OK / Enter for long press
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            event.startTracking();
+            return true;
+        }
+
         switch (keyCode) {
+            case KeyEvent.KEYCODE_MENU:
+            case KeyEvent.KEYCODE_INFO:
+            case KeyEvent.KEYCODE_GUIDE:
+            case KeyEvent.KEYCODE_SETTINGS:
+            case KeyEvent.KEYCODE_0:
+                toggleMouseMode();
+                return true;
+
             case KeyEvent.KEYCODE_DPAD_DOWN:
-                // Scroll to next video
-                executeJs(
-                        "(function() {" +
-                                "var evt = new KeyboardEvent('keydown', {key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40, bubbles: true});" +
-                                "window.dispatchEvent(evt);" +
-                                "document.dispatchEvent(evt);" +
-                                "setTimeout(function() {" +
-                                "  var btn = document.querySelector('[data-e2e=\"arrow-down\"]');" +
-                                "  if (btn) { btn.click(); }" +
-                                "  else { window.scrollBy({top: window.innerHeight * 0.88, behavior: 'smooth'}); }" +
-                                "}, 40);" +
-                                "})();"
-                );
+                if (isMouseMode) {
+                    moveCursor(0, 1f);
+                } else {
+                    nextVideo();
+                }
                 return true;
 
             case KeyEvent.KEYCODE_DPAD_UP:
-                // Scroll to previous video
-                executeJs(
-                        "(function() {" +
-                                "var evt = new KeyboardEvent('keydown', {key: 'ArrowUp', code: 'ArrowUp', keyCode: 38, which: 38, bubbles: true});" +
-                                "window.dispatchEvent(evt);" +
-                                "document.dispatchEvent(evt);" +
-                                "setTimeout(function() {" +
-                                "  var btn = document.querySelector('[data-e2e=\"arrow-up\"]');" +
-                                "  if (btn) { btn.click(); }" +
-                                "  else { window.scrollBy({top: -window.innerHeight * 0.88, behavior: 'smooth'}); }" +
-                                "}, 40);" +
-                                "})();"
-                );
-                return true;
-
-            case KeyEvent.KEYCODE_DPAD_CENTER:
-            case KeyEvent.KEYCODE_ENTER:
-            case KeyEvent.KEYCODE_NUMPAD_ENTER:
-            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                // Play / Pause toggle
-                executeJs(
-                        "(function() {" +
-                                "var v = document.querySelector('video');" +
-                                "if (v) {" +
-                                "  if (v.paused) { v.play(); } else { v.pause(); }" +
-                                "} else {" +
-                                "  var evt = new KeyboardEvent('keydown', {key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true});" +
-                                "  window.dispatchEvent(evt);" +
-                                "}" +
-                                "})();"
-                );
+                if (isMouseMode) {
+                    moveCursor(0, -1f);
+                } else {
+                    prevVideo();
+                }
                 return true;
 
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                // Rewind 5 seconds
-                executeJs(
-                        "(function() {" +
-                                "var v = document.querySelector('video');" +
-                                "if (v) { v.currentTime = Math.max(0, v.currentTime - 5); }" +
-                                "else {" +
-                                "  var evt = new KeyboardEvent('keydown', {key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, which: 37, bubbles: true});" +
-                                "  window.dispatchEvent(evt);" +
-                                "}" +
-                                "})();"
-                );
+                if (isMouseMode) {
+                    moveCursor(-1f, 0);
+                } else {
+                    seekVideo(-5);
+                }
                 return true;
 
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                // Fast forward 5 seconds
-                executeJs(
-                        "(function() {" +
-                                "var v = document.querySelector('video');" +
-                                "if (v) { v.currentTime = Math.min(v.duration, v.currentTime + 5); }" +
-                                "else {" +
-                                "  var evt = new KeyboardEvent('keydown', {key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true});" +
-                                "  window.dispatchEvent(evt);" +
-                                "}" +
-                                "})();"
-                );
+                if (isMouseMode) {
+                    moveCursor(1f, 0);
+                } else {
+                    seekVideo(5);
+                }
                 return true;
 
-            case KeyEvent.KEYCODE_MENU:
-                // Menu key toggles mute (m)
-                executeJs(
-                        "(function() {" +
-                                "var evt = new KeyboardEvent('keydown', {key: 'm', code: 'KeyM', keyCode: 77, which: 77, bubbles: true});" +
-                                "window.dispatchEvent(evt);" +
-                                "})();"
-                );
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                togglePlayPause();
                 return true;
 
             case KeyEvent.KEYCODE_BACK:
-                if (webView != null && webView.canGoBack()) {
-                    webView.goBack();
-                    return true;
-                }
-                if (System.currentTimeMillis() - lastBackPressTime < 2000) {
-                    finish();
-                } else {
-                    lastBackPressTime = System.currentTimeMillis();
-                    Toast.makeText(this, getString(R.string.press_back_again_to_exit), Toast.LENGTH_SHORT).show();
-                }
-                return true;
+                return handleBackPressed();
 
             default:
                 return super.onKeyDown(keyCode, event);
+        }
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            isLongPressHandled = true;
+            toggleMouseMode();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            if (isLongPressHandled) {
+                isLongPressHandled = false;
+                return true;
+            }
+            if (isMouseMode) {
+                dispatchMouseClick();
+            } else {
+                togglePlayPause();
+            }
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    private void nextVideo() {
+        long now = System.currentTimeMillis();
+        if (now - lastVideoSwitchTime < SWITCH_DEBOUNCE_MS) return;
+        lastVideoSwitchTime = now;
+        executeJs("window.__tiktokTVNextVideo && window.__tiktokTVNextVideo();");
+    }
+
+    private void prevVideo() {
+        long now = System.currentTimeMillis();
+        if (now - lastVideoSwitchTime < SWITCH_DEBOUNCE_MS) return;
+        lastVideoSwitchTime = now;
+        executeJs("window.__tiktokTVPrevVideo && window.__tiktokTVPrevVideo();");
+    }
+
+    private void togglePlayPause() {
+        executeJs("window.__tiktokTVTogglePlay && window.__tiktokTVTogglePlay();");
+    }
+
+    private void seekVideo(int seconds) {
+        executeJs("window.__tiktokTVSeek && window.__tiktokTVSeek(" + seconds + ");");
+    }
+
+    private boolean handleBackPressed() {
+        if (isMouseMode) {
+            toggleMouseMode();
+            return true;
+        }
+
+        // Try closing login modal if open
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "(function() { return window.__tiktokTVCloseModal ? window.__tiktokTVCloseModal() : false; })();",
+                    new ValueCallback<String>() {
+                        @Override
+                        public void onReceiveValue(String value) {
+                            if ("true".equalsIgnoreCase(value)) {
+                                showStatusIndicator(getString(R.string.modal_closed));
+                            } else {
+                                runOnUiThread(() -> {
+                                    if (webView != null && webView.canGoBack()) {
+                                        webView.goBack();
+                                    } else {
+                                        checkExit();
+                                    }
+                                });
+                            }
+                        }
+                    }
+            );
+            return true;
+        }
+
+        checkExit();
+        return true;
+    }
+
+    private void checkExit() {
+        if (System.currentTimeMillis() - lastBackPressTime < 2000) {
+            finish();
+        } else {
+            lastBackPressTime = System.currentTimeMillis();
+            Toast.makeText(this, getString(R.string.press_back_again_to_exit), Toast.LENGTH_SHORT).show();
         }
     }
 
