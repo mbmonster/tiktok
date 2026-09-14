@@ -23,6 +23,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -33,11 +34,15 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import java.io.ByteArrayInputStream;
+
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "TikTokTV";
     private static final String TIKTOK_URL = "https://www.tiktok.com";
-    private static final String DESKTOP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+    // Clean Chrome Android TV User Agent: no "wv" token so TikTok won't flag as WebView bot
+    private static final String CLEAN_USER_AGENT = "Mozilla/5.0 (Linux; Android 12; Mi Box 4K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
     // Video switch debounce threshold (prevents media decoder freeze and audio stutter)
     private static final long SWITCH_DEBOUNCE_MS = 350;
@@ -239,7 +244,7 @@ public class MainActivity extends AppCompatActivity {
         if (webView == null) return;
 
         try {
-            // Hardware acceleration is key for smooth 60fps video playback on TV boxes
+            // Hardware acceleration
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
             WebSettings settings = webView.getSettings();
@@ -250,15 +255,15 @@ public class MainActivity extends AppCompatActivity {
             settings.setBuiltInZoomControls(false);
             settings.setDisplayZoomControls(false);
 
-            // Desktop User Agent for full video player layout
-            settings.setUserAgentString(DESKTOP_USER_AGENT);
+            // Clean User Agent without "wv" token
+            settings.setUserAgentString(CLEAN_USER_AGENT);
 
-            // Allow video autoplay without touch gesture on TV
+            // Allow video autoplay without user gesture on TV
             settings.setMediaPlaybackRequiresUserGesture(false);
 
-            // Performance optimizations for TV chipsets
+            // Performance cache
             settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-            settings.setEnableSmoothTransition(false); // Prevents stuttery software interpolation
+            settings.setEnableSmoothTransition(false);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
@@ -272,7 +277,7 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
-                if (progressBar != null && newProgress >= 80) {
+                if (progressBar != null && newProgress >= 65) {
                     progressBar.setVisibility(View.GONE);
                 }
             }
@@ -293,6 +298,29 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
+                // Block external custom schemes like snssdk1233:// or intent:// that crash WebView
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    return false;
+                }
+                return true;
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString().toLowerCase();
+                // Intercept & block heavy telemetry and ad trackers that cause 100% CPU usage
+                if (url.contains("slardar") || url.contains("/telemetry/") || url.contains("byteoversea.com")
+                        || url.contains("mon.tiktokv.com") || url.contains("mcs.tiktokv.com")
+                        || url.contains("/log/") || url.contains("/beacon/")
+                        || url.contains("google-analytics") || url.contains("doubleclick")) {
+                    return new WebResourceResponse("text/plain", "UTF-8", new ByteArrayInputStream(new byte[0]));
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
                     if (progressBar != null) progressBar.setVisibility(View.GONE);
@@ -303,11 +331,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Injects custom CSS and JS optimizer:
-     * 1. Strips GPU-killing backdrop filters and box shadows for ultra-smooth 60fps playback.
-     * 2. Maximizes video container to 100% fullscreen cinema layout.
-     * 3. Exclusive Audio Watchdog: mutes/pauses background videos to eliminate crackling and A/V desync.
-     * 4. Smart Login & QR Auto-Enhancer: expands QR code so user can scan from couch.
+     * Injects lightweight CSS and DOM helpers:
+     * - Disables heavy filters
+     * - Auto mutes inactive videos
+     * - Maps next/prev functions
      */
     private void injectCustomScripts() {
         if (webView == null) return;
@@ -317,24 +344,19 @@ public class MainActivity extends AppCompatActivity {
                     "  if (window.__tiktokTVInjected) return;" +
                     "  window.__tiktokTVInjected = true;" +
 
-                    // Inject Lightweight TV Cinema CSS
+                    // Lightweight TV CSS
                     "  var style = document.createElement('style');" +
                     "  style.id = 'tiktok-tv-optimized-css';" +
                     "  style.innerHTML = '" +
                     "    * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; box-shadow: none !important; text-shadow: none !important; } " +
-                    "    body { overflow: hidden !important; background-color: #000 !important; } " +
                     "    video { will-change: transform; transform: translateZ(0); object-fit: contain !important; } " +
-                    // Hide desktop banners, app promo downloads, redundant sidebars when watching
                     "    [class*=\"banner\"], [id*=\"banner\"], [data-e2e*=\"download-app\"], [class*=\"download-app\"], " +
-                    "    [class*=\"DivBannerContainer\"], [class*=\"DivDownloadAppContainer\"], [class*=\"DivToastContainer\"], " +
-                    "    [class*=\"BottomBanner\"] { display: none !important; } " +
-                    // Center and enlarge QR code container when visible
-                    "    [data-e2e=\"qr-code\"], [class*=\"QRCodeContainer\"], [class*=\"DivQRCode\"] { transform: scale(1.2) !important; margin: 10px auto !important; } " +
+                    "    [class*=\"DivToastContainer\"], [class*=\"BottomBanner\"] { display: none !important; } " +
+                    "    [data-e2e=\"qr-code\"], [class*=\"QRCodeContainer\"], [class*=\"DivQRCode\"] { transform: scale(1.15) !important; margin: 10px auto !important; } " +
                     "  ';" +
                     "  document.head.appendChild(style);" +
 
-                    // --- EXCLUSIVE AUDIO WATCHDOG ---
-                    // Ensures only ONE video plays audio at a time to prevent audio crackling, overlap, and latency
+                    // Mute inactive background videos
                     "  function muteOtherVideos(activeVid) {" +
                     "    try {" +
                     "      var allVids = document.querySelectorAll('video');" +
@@ -343,13 +365,10 @@ public class MainActivity extends AppCompatActivity {
                     "        if (v !== activeVid) {" +
                     "          v.pause();" +
                     "          v.muted = true;" +
-                    "          v.volume = 0;" +
                     "        }" +
                     "      }" +
                     "      if (activeVid) {" +
                     "        activeVid.muted = false;" +
-                    "        activeVid.volume = 1.0;" +
-                    "        activeVid.playbackRate = 1.0;" +
                     "      }" +
                     "    } catch(e) {}" +
                     "  }" +
@@ -358,11 +377,7 @@ public class MainActivity extends AppCompatActivity {
                     "    if (e.target && e.target.tagName === 'VIDEO') { muteOtherVideos(e.target); }" +
                     "  }, true);" +
 
-                    "  document.addEventListener('playing', function(e) {" +
-                    "    if (e.target && e.target.tagName === 'VIDEO') { muteOtherVideos(e.target); }" +
-                    "  }, true);" +
-
-                    // --- NAVIGATION HELPERS ---
+                    // Navigation Helpers
                     "  window.__tiktokTVNextVideo = function() {" +
                     "    var btn = document.querySelector('[data-e2e=\"arrow-down\"]') || " +
                     "              document.querySelector('button[aria-label*=\"Next\"]') || " +
@@ -418,7 +433,6 @@ public class MainActivity extends AppCompatActivity {
                     "    }" +
                     "  };" +
 
-                    // Smart Modal closer: closes login modal on Back press
                     "  window.__tiktokTVCloseModal = function() {" +
                     "    var closeBtn = document.querySelector('[data-e2e=\"modal-close-inner-button\"], button[aria-label*=\"Close\"], [class*=\"CloseButton\"], [class*=\"ModalClose\"]');" +
                     "    if (closeBtn) {" +
@@ -432,18 +446,6 @@ public class MainActivity extends AppCompatActivity {
                     "    }" +
                     "    return false;" +
                     "  };" +
-
-                    // Auto switch to QR code tab if login dialog appears
-                    "  setInterval(function() {" +
-                    "    var modal = document.querySelector('[data-e2e=\"modal-close-inner-button\"], [class*=\"DivLoginContainer\"]');" +
-                    "    if (modal) {" +
-                    "      var qrImg = document.querySelector('[data-e2e=\"qr-code\"], canvas');" +
-                    "      if (!qrImg) {" +
-                    "        var qrBtn = document.querySelector('a[href*=\"qrcode\"], div[role=\"button\"][data-e2e*=\"qr\"]');" +
-                    "        if (qrBtn) { qrBtn.click(); }" +
-                    "      }" +
-                    "    }" +
-                    "  }, 1000);" +
 
                     "})();";
 
