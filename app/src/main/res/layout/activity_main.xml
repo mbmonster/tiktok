@@ -45,7 +45,7 @@
         android:layout_gravity="center"
         android:elevation="10dp"
         android:indeterminate="true"
-        android:visibility="visible" />
+        android:visibility="gone" />
 
     <!-- Error/Offline View -->
     <LinearLayout

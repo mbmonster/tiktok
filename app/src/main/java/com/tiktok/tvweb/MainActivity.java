@@ -19,6 +19,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -119,6 +120,11 @@ public class MainActivity extends AppCompatActivity {
         if (webView != null) {
             webView.loadUrl(TIKTOK_URL);
         }
+
+        // Safety watchdog: auto-hide progress spinner after 5 seconds so it never covers video
+        uiHandler.postDelayed(() -> {
+            if (progressBar != null) progressBar.setVisibility(View.GONE);
+        }, 5000);
     }
 
     private void setupAudioManager() {
@@ -255,6 +261,10 @@ public class MainActivity extends AppCompatActivity {
             settings.setBuiltInZoomControls(false);
             settings.setDisplayZoomControls(false);
 
+            // Responsive viewport for TV
+            settings.setLoadWithOverviewMode(true);
+            settings.setUseWideViewPort(true);
+
             // Clean User Agent without "wv" token
             settings.setUserAgentString(CLEAN_USER_AGENT);
 
@@ -277,8 +287,17 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
-                if (progressBar != null && newProgress >= 65) {
+                if (progressBar != null && newProgress >= 60) {
                     progressBar.setVisibility(View.GONE);
+                }
+            }
+
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                try {
+                    request.grant(request.getResources());
+                } catch (Exception e) {
+                    Log.w(TAG, "Permission request error", e);
                 }
             }
         });
@@ -286,7 +305,6 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                if (progressBar != null) progressBar.setVisibility(View.VISIBLE);
                 if (errorLayout != null) errorLayout.setVisibility(View.GONE);
             }
 
@@ -351,7 +369,7 @@ public class MainActivity extends AppCompatActivity {
                     "    * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; box-shadow: none !important; text-shadow: none !important; } " +
                     "    video { will-change: transform; transform: translateZ(0); object-fit: contain !important; } " +
                     "    [class*=\"banner\"], [id*=\"banner\"], [data-e2e*=\"download-app\"], [class*=\"download-app\"], " +
-                    "    [class*=\"DivToastContainer\"], [class*=\"BottomBanner\"] { display: none !important; } " +
+                    "    [class*=\"DivToastContainer\"], [class*=\"BottomBanner\"], [class*=\"DivBannerContainer\"] { display: none !important; } " +
                     "    [data-e2e=\"qr-code\"], [class*=\"QRCodeContainer\"], [class*=\"DivQRCode\"] { transform: scale(1.15) !important; margin: 10px auto !important; } " +
                     "  ';" +
                     "  document.head.appendChild(style);" +
@@ -526,6 +544,37 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Simulates smooth touch swipe to support mobile/PWA feed switching on TV
+     */
+    private void simulateSwipe(float startX, float startY, float endX, float endY, long durationMs) {
+        if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) return;
+        try {
+            long downTime = SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, startX, startY, 0);
+            webView.dispatchTouchEvent(down);
+            down.recycle();
+
+            int steps = 10;
+            for (int i = 1; i <= steps; i++) {
+                float fraction = (float) i / steps;
+                float curX = startX + (endX - startX) * fraction;
+                float curY = startY + (endY - startY) * fraction;
+                long eventTime = downTime + (durationMs * i / steps);
+                MotionEvent move = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_MOVE, curX, curY, 0);
+                webView.dispatchTouchEvent(move);
+                move.recycle();
+            }
+
+            long upTime = downTime + durationMs;
+            MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, endX, endY, 0);
+            webView.dispatchTouchEvent(up);
+            up.recycle();
+        } catch (Exception e) {
+            Log.e(TAG, "Error simulating swipe", e);
+        }
+    }
+
+    /**
      * Map Remote Control keys:
      * - Press MENU, INFO, GUIDE, 0: Toggle Virtual Mouse Cursor
      * - Long press OK / Enter: Toggle Virtual Mouse Cursor (for remotes without MENU key)
@@ -624,14 +673,34 @@ public class MainActivity extends AppCompatActivity {
         long now = System.currentTimeMillis();
         if (now - lastVideoSwitchTime < SWITCH_DEBOUNCE_MS) return;
         lastVideoSwitchTime = now;
+
+        // Try JS button click
         executeJs("window.__tiktokTVNextVideo && window.__tiktokTVNextVideo();");
+
+        // Dual trigger: also simulate touch swipe up for mobile/PWA feed compatibility
+        uiHandler.postDelayed(() -> {
+            if (webView != null && webView.getWidth() > 0 && webView.getHeight() > 0) {
+                float midX = webView.getWidth() / 2f;
+                simulateSwipe(midX, webView.getHeight() * 0.75f, midX, webView.getHeight() * 0.22f, 200);
+            }
+        }, 50);
     }
 
     private void prevVideo() {
         long now = System.currentTimeMillis();
         if (now - lastVideoSwitchTime < SWITCH_DEBOUNCE_MS) return;
         lastVideoSwitchTime = now;
+
+        // Try JS button click
         executeJs("window.__tiktokTVPrevVideo && window.__tiktokTVPrevVideo();");
+
+        // Dual trigger: also simulate touch swipe down for mobile/PWA feed compatibility
+        uiHandler.postDelayed(() -> {
+            if (webView != null && webView.getWidth() > 0 && webView.getHeight() > 0) {
+                float midX = webView.getWidth() / 2f;
+                simulateSwipe(midX, webView.getHeight() * 0.22f, midX, webView.getHeight() * 0.75f, 200);
+            }
+        }, 50);
     }
 
     private void togglePlayPause() {
